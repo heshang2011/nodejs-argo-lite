@@ -691,6 +691,21 @@ function loadDisguisePage() {
 
 let disguisePage = '';
 
+// 伪装页文件缺失或读取失败时的兜底页面：始终是一个普通站点，
+// 绝不回落到会暴露节点信息的内部页面。
+const FALLBACK_PAGE = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Welcome</title>
+</head>
+<body>
+<h1>Welcome</h1>
+<p>This site is up and running.</p>
+</body>
+</html>`;
+
 function renderHomePage() {
   const status = nodeLink ? '运行中' : '节点生成中，请稍候刷新';
   const node = nodeLink || '';
@@ -760,10 +775,11 @@ function startServer() {
       return;
     }
 
-    // 伪装页：所有非订阅请求都返回正常站点，不暴露节点信息
-    if (DISGUISE && disguisePage) {
+    // 默认入口：所有非订阅请求都返回伪装页，不暴露节点信息。
+    // 启动早期或伪装页文件缺失时用兜底页，绝不回落成节点信息页。
+    if (DISGUISE) {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(disguisePage);
+      res.end(disguisePage || FALLBACK_PAGE);
       return;
     }
 
