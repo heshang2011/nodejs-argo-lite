@@ -54,8 +54,10 @@ const KEEPALIVE_INTERVAL = Math.max(                                  // 保活�
   1,
   Number(process.env.KEEPALIVE_INTERVAL || 5) || 5
 );
+// 默认静默：平台上不再输出任何启动信息、节点链接与访问日志，避免被人一眼看出。
+// 需要排障时设 SHOW_LOG=true 即可恢复完整输出。
 const SHOW_LOG = !['false', 'disable', 'no', '0'].includes(
-  String(process.env.SHOW_LOG || 'true').toLowerCase()
+  String(process.env.SHOW_LOG || 'false').toLowerCase()
 );
 
 const WS_PATH = '/vless-argo';  // VLESS WebSocket 路径，与订阅节点保持一致
@@ -67,8 +69,19 @@ let WS_PORT = 0;                // Xray 内部 WS 入站端口（由程序自动
 const log = (...args) => {
   if (SHOW_LOG) console.log(...args);
 };
-const alwaysLog = (msg) => process.stdout.write(msg + '\n');
+const errLog = (...args) => {
+  if (SHOW_LOG) console.error(...args);
+};
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// 静默模式下连 Node 自身的告警（DeprecationWarning）、未捕获堆栈一起吞掉，
+// 否则平台上仍会零星出现带项目路径的英文报错，一眼就能看出跑的是什么。
+if (!SHOW_LOG) {
+  process.noDeprecation = true;
+  const swallow = () => true;
+  process.stdout.write = swallow;
+  process.stderr.write = swallow;
+}
 
 function isValidPort(port) {
   const num = parseInt(port, 10);
@@ -203,7 +216,17 @@ async function ensureXray(info) {
 
   log(`下载 Xray: ${url}`);
   await download(url, zipPath);
-  new AdmZip(zipPath).extractAllTo(workDir, true);
+  // 只解出可执行文件：压缩包里的 geoip/geosite/许可文件在本项目配置中用不到，
+  // 全部解压会留下一堆 90 秒自删覆盖不到的痕迹。
+  const zip = new AdmZip(zipPath);
+  const entry = zip.getEntry(info.xrayBin)
+    || zip.getEntries().find((e) => path.basename(e.entryName) === info.xrayBin);
+  if (entry) {
+    zip.extractEntryTo(entry, workDir, false, true);
+  } else {
+    // 压缩包结构变化时退回全量解压，保证仍能启动
+    zip.extractAllTo(workDir, true);
+  }
   fs.rmSync(zipPath, { force: true });
 
   if (!fs.existsSync(binPath)) throw new Error('Xray 解压后未找到可执行文件');
@@ -254,7 +277,7 @@ function startProcess(binPath, args, logFile) {
   });
   child.on('error', (err) => {
     children.delete(child);
-    console.error(`${path.basename(binPath)} 启动失败: ${err.message}`);
+    errLog(`${path.basename(binPath)} 启动失败: ${err.message}`);
   });
 
   // 跟踪这次启动产生的文件，供 90 秒自删使用
@@ -313,7 +336,7 @@ function cleanFiles(delayMs = CLEAN_DELAY) {
     }
     cleanTargets.clear();
 
-    alwaysLog(`已清理 ${removed} 个运行文件，服务继续运行`);
+    log(`已清理 ${removed} 个运行文件，服务继续运行`);
   }, delayMs);
 
   if (timer.unref) timer.unref();
@@ -355,7 +378,10 @@ function writeXrayConfig() {
   };
 
   const config = {
-    log: { loglevel: 'warning' },
+    // access 必须显式关掉：不写这一项时 Xray 会把每次请求
+    // （客户端 IP + 目标域名）打到 stdout，平台上相当于公开浏览记录。
+    // stdout/stderr 仍会被 startProcess 写入 xray.log，SHOW_LOG 打开时可排障。
+    log: { access: 'none', error: 'none', loglevel: 'none' },
     inbounds: [tcpInbound, wsInbound],
     dns: { servers: ['https+local://8.8.8.8/dns-query'] },
     outbounds: [
@@ -427,7 +453,7 @@ async function keepaliveTick() {
     keepaliveFailures++;
     // 连续失败才提示，避免偶发抖动刷屏
     if (keepaliveFailures >= 3) {
-      console.error(`保活失败 ${keepaliveFailures} 次: ${err.message}`);
+      errLog(`保活失败 ${keepaliveFailures} 次: ${err.message}`);
     }
   }
 }
@@ -438,11 +464,11 @@ function startKeepalive() {
     return false;
   }
   if (!PROJECT_URL) {
-    console.error('AUTO_ACCESS 已开启但未填写 PROJECT_URL，跳过保活');
+    errLog('AUTO_ACCESS 已开启但未填写 PROJECT_URL，跳过保活');
     return false;
   }
   if (!/^https?:\/\//i.test(PROJECT_URL)) {
-    console.error(`PROJECT_URL 必须以 http:// 或 https:// 开头: ${PROJECT_URL}`);
+    errLog(`PROJECT_URL 必须以 http:// 或 https:// 开头: ${PROJECT_URL}`);
     return false;
   }
 
@@ -518,7 +544,7 @@ async function startProbe(info) {
     await sleep(1500);
     return true;
   } catch (err) {
-    console.error(`探针启动失败: ${err.message}`);
+    errLog(`探针启动失败: ${err.message}`);
     return false;
   }
 }
@@ -554,13 +580,14 @@ function prepareFixedTunnel() {
 
     return {
       mode: 'json',
-      args: ['tunnel', '--no-autoupdate', '--edge-ip-version', 'auto', '--config', tunnelYmlPath, 'run']
+      // 固定隧道不需要从日志里解析域名，压到 warn 只保留真正的异常
+      args: ['tunnel', '--no-autoupdate', '--edge-ip-version', 'auto', '--loglevel', 'warn', '--config', tunnelYmlPath, 'run']
     };
   }
 
   return {
     mode: 'token',
-    args: ['tunnel', '--no-autoupdate', '--edge-ip-version', 'auto', '--protocol', 'http2', 'run', '--token', ARGO_AUTH]
+    args: ['tunnel', '--no-autoupdate', '--edge-ip-version', 'auto', '--protocol', 'http2', '--loglevel', 'warn', 'run', '--token', ARGO_AUTH]
   };
 }
 
@@ -570,6 +597,8 @@ function quickTunnelArgs() {
     '--no-autoupdate',
     '--edge-ip-version', 'auto',
     '--protocol', 'http2',
+    // 临时隧道域名只能从 info 日志里解析，这一项不能降级；
+    // 输出只写本地日志文件，SHOW_LOG=false 时不会透传到平台日志。
     '--loglevel', 'info',
     '--url', `http://127.0.0.1:${ARGO_PORT}`
   ];
@@ -644,10 +673,10 @@ function publishNodes(domain) {
   subContent = Buffer.from(subTxt, 'utf8').toString('base64');
   fs.writeFileSync(subFilePath, subContent);
 
-  alwaysLog('---------------- 节点信息 ----------------');
-  alwaysLog(nodeLink);
-  alwaysLog('------------------------------------------');
-  alwaysLog(`订阅路径: /${SUB_PATH}`);
+  log('---------------- 节点信息 ----------------');
+  log(nodeLink);
+  log('------------------------------------------');
+  log(`订阅路径: /${SUB_PATH}`);
 }
 
 /* ------------------------------- HTTP 服务 ------------------------------ */
@@ -748,8 +777,8 @@ function startServer() {
     res.end('Not Found');
   });
 
-  server.on('error', (err) => console.error(`HTTP 服务错误: ${err.message}`));
-  server.listen(PORT, () => alwaysLog(`HTTP 服务已启动，端口 ${PORT}`));
+  server.on('error', (err) => errLog(`HTTP 服务错误: ${err.message}`));
+  server.listen(PORT, () => log(`HTTP 服务已启动，端口 ${PORT}`));
 }
 
 /* --------------------------------- 主流程 ------------------------------- */
@@ -762,14 +791,14 @@ async function main() {
   }
 
   if (!await ensureArgoPort()) {
-    console.error('找不到可用端口，无法启动 Xray');
+    errLog('找不到可用端口，无法启动 Xray');
     return;
   }
 
   const [xrayBin, cfdBin] = await Promise.all([ensureXray(info), ensureCloudflared(info)]);
 
   if (!await startXray(xrayBin)) {
-    console.error(`Xray 启动失败，请检查日志: ${xrayLogPath}`);
+    errLog(`Xray 启动失败，请检查日志: ${xrayLogPath}`);
     return;
   }
 
@@ -780,7 +809,7 @@ async function main() {
 
   const domain = await startArgo(cfdBin);
   if (!domain) {
-    console.error('未能获取 Argo 隧道域名，节点生成失败');
+    errLog('未能获取 Argo 隧道域名，节点生成失败');
     return;
   }
 
@@ -789,4 +818,4 @@ async function main() {
 }
 
 startServer();
-main().catch((err) => console.error(`启动失败: ${err.message}`));
+main().catch((err) => errLog(`启动失败: ${err.message}`));

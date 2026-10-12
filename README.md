@@ -33,7 +33,7 @@
 | `NAME` | 否 | `argo-vless` | 节点名称 |
 | `FILE_PATH` | 否 | `./tmp` | 运行目录（存放二进制、日志、订阅） |
 | `SUB_PATH` | 否 | `sub` | 订阅路径 |
-| `SHOW_LOG` | 否 | `true` | `false/no/disable/0` 关闭日志 |
+| `SHOW_LOG` | 否 | `false` | 日志总开关，默认静默；`true/yes/1/on` 恢复完整输出 |
 | `XRAY_URL` | 否 | 官方 GitHub | 自定义 Xray 压缩包地址 |
 | `CF_URL` | 否 | 官方 GitHub | 自定义 cloudflared 地址 |
 | `DISGUISE` | 否 | `true` | 是否启用伪装页，`false/no/disable/0` 关闭 |
@@ -61,6 +61,23 @@ npm start
 
 - 伪装页：`http://localhost:3000/`（任意路径都返回伪装页）
 - 订阅：`http://localhost:3000/sub`
+
+## 静默运行（默认）
+
+`SHOW_LOG` 默认为 `false`，平台上**不会出现任何输出**：
+
+- Xray 的 access log 被显式关闭（`access/error: none`）。这一项最要紧 ——
+  不关的话每访问一个网站都会打一行 `from <客户端IP> accepted tcp:<域名>:443`，
+  等于把你的浏览记录和客户端 IP 公开在平台日志里。
+- 节点链接、订阅路径、启动横幅、清理提示全部改为受控输出，只在 `SHOW_LOG=true` 时打印。
+- cloudflared 的输出只写本地日志文件，不透传到平台日志；固定隧道额外降到 `warn`。
+- 连 Node 自身的告警（DeprecationWarning）和未捕获堆栈也一并吞掉。
+
+排障时临时设 `SHOW_LOG=true`，日志会完整输出，运行目录下也会保留 `xray.log`、
+`cloudflared.log`、`vps-dog.log`。
+
+> 临时隧道的域名必须从 cloudflared 的 `info` 日志里解析，因此临时隧道场景
+> 日志级别不能降级；但输出只落在本地文件，90 秒后随其他运行文件一起删除。
 
 ## 伪装页
 

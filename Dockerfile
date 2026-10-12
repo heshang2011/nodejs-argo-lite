@@ -44,7 +44,7 @@ RUN set -eux; \
 ENV PORT=3000 \
     ARGO_PORT=8001 \
     FILE_PATH=/app/tmp \
-    SHOW_LOG=true
+    SHOW_LOG=false
 
 EXPOSE 3000
 
