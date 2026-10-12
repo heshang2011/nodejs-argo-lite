@@ -1,0 +1,19 @@
+{
+  "name": "nodejs-argo-lite",
+  "version": "1.0.0",
+  "description": "极简版 Argo 隧道 VLESS 节点生成器",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "axios": "^1.7.9"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "private": true
+}
